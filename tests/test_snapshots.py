@@ -6,6 +6,7 @@ import pytest
 from textual.pilot import Pilot
 from textual.widgets import Input
 from posting.__main__ import make_posting
+from posting.scripts import clear_module_cache
 
 TEST_DIR = Path(__file__).parent
 CONFIG_DIR = TEST_DIR / "sample-configs"
@@ -408,7 +409,7 @@ class TestVariables:
 
         async def run_before(pilot: Pilot):
             await pilot.press("j", "j", "enter")
-            await pilot.press("ctrl+l")
+            await pilot.press("ctrl+l", "right")
 
         assert snap_compare(app, run_before=run_before)
 
@@ -442,7 +443,7 @@ class TestCustomThemeSimple:
 
         async def run_before(pilot: Pilot):
             await pilot.press("j", "j", "enter")
-            await pilot.press("ctrl+l", *"/$lol/")
+            await pilot.press("ctrl+l", "right", *"/$lol/")
             await pilot.press("ctrl+o", "w")
 
         assert snap_compare(app, run_before=run_before, terminal_size=(100, 32))
@@ -488,7 +489,7 @@ class TestCustomThemeComplex:
 
         async def run_before(pilot: Pilot):
             await pilot.press("j", "j", "enter")
-            await pilot.press("ctrl+l", *"/$lol/")
+            await pilot.press("ctrl+l", "right", *"/$lol/")
             await pilot.press("ctrl+o", "w")
 
         assert snap_compare(app, run_before=run_before, terminal_size=(100, 32))
@@ -546,6 +547,44 @@ class TestFocusAutoSwitchingConfig:
             await pilot.wait_for_scheduled_animations()
 
         assert snap_compare(POSTING_MAIN, run_before=run_before, terminal_size=(80, 60))
+
+
+@use_config("general.yaml")
+@patch_env("POSTING_FOCUS__ON_STARTUP", "collection")
+class TestDisableRowInTable:
+    def test_disable_row_in_table(self, snap_compare):
+        """Check that a row can be disabled in a table."""
+
+        async def run_before(pilot: Pilot):
+            await pilot.press("j", "j", "enter")
+            await pilot.press("ctrl+o", "q")
+            await pilot.press("j", "j", "space", "j")
+
+        assert snap_compare(POSTING_MAIN, run_before=run_before)
+
+
+@use_config("general.yaml")
+@patch_env("POSTING_FOCUS__ON_STARTUP", "collection")
+class TestCurlExport:
+    # TODO - there's an ordering dependency between the two tests here.
+
+    def test_curl_export_no_setup(self, snap_compare):
+        """Check that the curl export works when setup scripts are not run."""
+
+        async def run_before(pilot: Pilot):
+            await pilot.press("enter")
+            await pilot.press("ctrl+p", *"curl no setup", "enter")
+
+        assert snap_compare(POSTING_MAIN, run_before=run_before)
+
+    def test_curl_export(self, snap_compare):
+        """Check that the curl export works correctly."""
+
+        async def run_before(pilot: Pilot):
+            await pilot.press("enter")
+            await pilot.press("ctrl+p", *"curl", "enter")
+
+        assert snap_compare(POSTING_MAIN, run_before=run_before)
 
 
 @use_config("general.yaml")

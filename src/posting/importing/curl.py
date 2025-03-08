@@ -67,6 +67,9 @@ class CurlImport:
         parser.add_argument("-e", "--referer", help="Referrer URL")
         parser.add_argument("-A", "--user-agent", help="User-Agent to send to server")
         parser.add_argument(
+            "-m", "--max-time", help="Maximum time to wait for a response"
+        )
+        parser.add_argument(
             "--digest",
             action="store_true",
             help="Use HTTP Digest Authentication",
@@ -218,6 +221,15 @@ class CurlImport:
                     except Exception:
                         # If we can't parse it, keep it as a header
                         remaining_headers.append((name, value))
+
+                elif auth_type_lower == "bearer":
+                    # Bearer token auth
+                    try:
+                        auth = Auth.bearer_token_auth(auth_value)
+                    except Exception:
+                        # If we can't parse it, keep it as a header
+                        remaining_headers.append((name, value))
+
                 else:
                     # Unknown auth type, keep as header
                     remaining_headers.append((name, value))

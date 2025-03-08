@@ -1,16 +1,17 @@
 from __future__ import annotations
 from functools import total_ordering
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 from pathlib import Path
 from string import Template
-from typing import Any, Literal, get_args
+from typing import Any, Generator, Literal, get_args
 import httpx
 from pydantic import BaseModel, Field, HttpUrl
 import rich
 import yaml
 import os
+from posting.auth import HttpxBearerTokenAuth
 from posting.tuple_to_multidict import tuples_to_dict
 from posting.variables import SubstitutionError
-
 from posting.version import VERSION
 
 
@@ -34,9 +35,10 @@ yaml.representer.SafeRepresenter.add_representer(
 
 
 class Auth(BaseModel):
-    type: Literal["basic", "digest"] | None = Field(default=None)
+    type: Literal["basic", "digest", "bearer_token"] | None = Field(default=None)
     basic: BasicAuth | None = Field(default=None)
     digest: DigestAuth | None = Field(default=None)
+    bearer_token: BearerTokenAuth | None = Field(default=None)
 
     def to_httpx_auth(self) -> httpx.Auth | None:
         if self.type == "basic":
@@ -45,6 +47,9 @@ class Auth(BaseModel):
         elif self.type == "digest":
             assert self.digest is not None
             return httpx.DigestAuth(self.digest.username, self.digest.password)
+        elif self.type == "bearer_token":
+            assert self.bearer_token is not None
+            return HttpxBearerTokenAuth(self.bearer_token.token)
         return None
 
     @classmethod
@@ -57,6 +62,10 @@ class Auth(BaseModel):
             type="digest", digest=DigestAuth(username=username, password=password)
         )
 
+    @classmethod
+    def bearer_token_auth(cls, token: str) -> Auth:
+        return cls(type="bearer_token", bearer_token=BearerTokenAuth(token=token))
+
 
 class BasicAuth(BaseModel):
     username: str = Field(default="")
@@ -66,6 +75,10 @@ class BasicAuth(BaseModel):
 class DigestAuth(BaseModel):
     username: str = Field(default="")
     password: str = Field(default="")
+
+
+class BearerTokenAuth(BaseModel):
+    token: str = Field(default="")
 
 
 class Header(BaseModel):
@@ -121,7 +134,7 @@ class RequestBody(BaseModel):
         if self.form_data:
             # Ensure we don't delete duplicate keys
             httpx_args["data"] = tuples_to_dict(
-                [(item.name, item.value) for item in self.form_data]
+                [(item.name, item.value) for item in self.form_data if item.enabled]
             )
         return httpx_args
 
@@ -239,6 +252,9 @@ class RequestModel(BaseModel):
                     self.auth.digest.username = template.substitute(variables)
                     template = Template(self.auth.digest.password)
                     self.auth.digest.password = template.substitute(variables)
+                if self.auth.bearer_token is not None:
+                    template = Template(self.auth.bearer_token.token)
+                    self.auth.bearer_token.token = template.substitute(variables)
         except (KeyError, ValueError) as e:
             raise SubstitutionError(f"Variable not defined: {e}")
 
@@ -279,6 +295,86 @@ class RequestModel(BaseModel):
     def delete_from_disk(self) -> None:
         if self.path:
             self.path.unlink()
+
+    def to_curl(self, extra_args: str = "") -> str:
+        """Convert the request model to a cURL command.
+
+        Optionally supply extra arguments to insert into the command.
+
+        Args:
+            extra_args: A string of extra arguments to insert into the command.
+
+        Returns:
+            A string of the cURL command that can be used via the command line.
+        """
+        parts = ["curl"]
+        if extra_args:
+            parts.append(extra_args)
+
+        if self.method != "GET":
+            parts.append(f"-X {self.method}")
+
+        for header in self.headers:
+            if header.enabled:
+                parts.append(f"-H '{header.name}: {header.value}'")
+
+        parsed_url = urlparse(self.url)
+        existing_params = parse_qsl(parsed_url.query)
+        if self.params:
+            for param in self.params:
+                if param.enabled:
+                    existing_params.append((param.name, param.value))
+
+        new_query = urlencode(existing_params)
+        new_url = urlunparse(
+            (
+                parsed_url.scheme,
+                parsed_url.netloc,
+                parsed_url.path,
+                parsed_url.params,
+                new_query,
+                parsed_url.fragment,
+            )
+        )
+
+        if self.body and self.body.content:
+            parts.append(f"-d '{self.body.content}'")
+
+        if self.body and self.body.form_data:
+            for item in self.body.form_data:
+                if item.enabled:
+                    parts.append(f"-F '{item.name}={item.value}'")
+
+        if self.auth:
+            if self.auth.type == "basic" and self.auth.basic:
+                parts.append(
+                    f"-u '{self.auth.basic.username}:{self.auth.basic.password}'"
+                )
+            elif self.auth.type == "digest" and self.auth.digest:
+                parts.append(
+                    f"--digest -u '{self.auth.digest.username}:{self.auth.digest.password}'"
+                )
+
+        for cookie in self.cookies:
+            if cookie.enabled:
+                parts.append(f"--cookie '{cookie.name}={cookie.value}'")
+
+        if not self.options.follow_redirects:
+            parts.append("--no-location")
+
+        if not self.options.verify_ssl:
+            parts.append("--insecure")
+
+        if self.options.timeout != 5.0:  # Only add if not the default
+            parts.append(f"--max-time {self.options.timeout}")
+
+        if self.options.proxy_url:
+            parts.append(f"--proxy '{self.options.proxy_url}'")
+
+        parts.append(f"'{new_url}'")
+
+        # Join with newlines for better readability, similar to other tools
+        return " \\\n  ".join(parts)
 
     def __lt__(self, other: RequestModel) -> bool:
         return request_sort_key(self) < request_sort_key(other)
